@@ -6,12 +6,3 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
-
-ada.sh
-# Glue Python files
-glue/dist
-glue/build
-*egg-info
-.coverage
-
-.DS_Store
