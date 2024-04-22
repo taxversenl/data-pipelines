@@ -93,8 +93,8 @@ export class GluePipelineStack extends cdk.Stack {
         const glueDatabase = new glue.CfnDatabase(this, "glue-database", {
             catalogId: cdk.Aws.ACCOUNT_ID,
             databaseInput: {
-                name: "price-database",
-                description: "Database to store prices.",
+                name: "tax-database",
+                description: "Database to store tax data.",
             },
         });
         glueDatabase.applyRemovalPolicy(RemovalPolicy.DESTROY);
@@ -109,18 +109,36 @@ export class GluePipelineStack extends cdk.Stack {
                 resource: {
                     databaseResource: {
                         catalogId: glueDatabase.catalogId,
-                        name: "price-database",
+                        name: "tax-database",
                     },
                 },
                 permissions: ["ALL"],
             },
         );
         lakeformationPermission.applyRemovalPolicy(RemovalPolicy.DESTROY);
+
+        // Define outputs
+        new cdk.CfnOutput(this, "DatabaseName", {
+            value: glueDatabase.ref,
+        });
+
+        new cdk.CfnOutput(this, "RawBucketName", {
+            value: rawBucket.bucketName,
+        });
+
+        new cdk.CfnOutput(this, "ProcessedBucketNameOutput", {
+            value: processedBucket.bucketName,
+        });
+
+        new cdk.CfnOutput(this, "ScriptsBucketNameOutput", {
+            value: scriptsBucket.bucketName,
+        });
+
         // Create Glue Crawler
         const glueCrawler = new glue.CfnCrawler(this, "glue_crawler", {
             name: "glue_crawler",
             role: glueRole.roleArn,
-            databaseName: "price-database",
+            databaseName: "tax-database",
             targets: {
                 s3Targets: [
                     {
