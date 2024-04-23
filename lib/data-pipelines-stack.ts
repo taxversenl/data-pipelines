@@ -3,18 +3,17 @@ import { Stack } from "aws-cdk-lib";
 import { Construct } from "constructs";
 
 import { GluePipelineStack } from "../bin/glue-pipeline-stack";
-import { IcebergTable } from "../bin/iceberg-table";
-import { ServerlessPostgresStack } from "../bin/serverless-postgress-stack";
+import { IcebergTablesStack } from "../bin/iceberg-table";
 
 export class DataPipelinesStack extends Stack {
     constructor(scope: Construct, id: string, props?: cdk.StackProps) {
         super(scope, id, { ...props, crossRegionReferences: true });
 
-        new ServerlessPostgresStack(scope, "ServerlessPostgresStack", {});
+        // new ServerlessPostgresStack(scope, "ServerlessPostgresStack", {});
         new GluePipelineStack(scope, "GluePipelineStack", {});
         // Define parameters for the Iceberg table
         const databaseName = cdk.Fn.importValue("DatabaseName");
-        const bucketName = cdk.Fn.importValue("RawBucketName");
+        const bucketName = `table-data-${cdk.Aws.ACCOUNT_ID}`;
         const tableName = "account_receivable"; // Corrected table name
         const columns = `\
         TransactionID string,\
@@ -28,7 +27,7 @@ export class DataPipelinesStack extends Stack {
         const workgroup = "primary";
 
         // Create the Iceberg table
-        new IcebergTable(this, "account_receivables", {
+        new IcebergTablesStack(scope, "IcebergTablesStack", {
             databaseName,
             tableName,
             columns,

@@ -90,7 +90,7 @@ export class GluePipelineStack extends cdk.Stack {
         glueRole.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
         // Create Glue Database and grant LakeFormation permissions
-        const glueDatabase = new glue.CfnDatabase(this, "glue-database", {
+        const glueDatabase = new glue.CfnDatabase(this, "tax-database", {
             catalogId: cdk.Aws.ACCOUNT_ID,
             databaseInput: {
                 name: "tax-database",
@@ -120,10 +120,12 @@ export class GluePipelineStack extends cdk.Stack {
         // Define outputs
         new cdk.CfnOutput(this, "DatabaseName", {
             value: glueDatabase.ref,
+            exportName: "DatabaseName",
         });
 
         new cdk.CfnOutput(this, "RawBucketName", {
             value: rawBucket.bucketName,
+            exportName: "RawBucketName",
         });
 
         new cdk.CfnOutput(this, "ProcessedBucketNameOutput", {

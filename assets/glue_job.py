@@ -1,13 +1,10 @@
 import io
-import os
-import sys
 import json
 import boto3
-import urllib3
-import datetime
-from datetime import timedelta
-from awsglue.utils import getResolvedOptions
 import pandas as pd
+from datetime import datetime, timedelta
+from awsglue.utils import getResolvedOptions
+from pyiceberg import IcebergTable
 
 # Initialize Glue client
 glue_client = boto3.client("glue")
@@ -36,8 +33,8 @@ response = cloudtrail_client.lookup_events(
             'AttributeValue': 'NotifyEvent'
         },
     ],
-    StartTime=(datetime.datetime.now() - timedelta(minutes=10)),
-    EndTime=datetime.datetime.now(),
+    StartTime=(datetime.now() - timedelta(minutes=10)),
+    EndTime=datetime.now(),
     MaxResults=100
 )
 
@@ -61,5 +58,21 @@ for event in events:
         # Read CSV file with pandas
         df = pd.read_csv(io.BytesIO(obj['Body'].read()))
 
-        # Print first few rows of the DataFrame
-        print(df.head())
+        # Create Iceberg table schema
+        schema = {
+            "TransactionID": "string",
+            "CustomerID": "int",
+            "Name": "string",
+            "InvoiceNumber": "string",
+            "InvoiceDate": "date",
+            "InvoiceAmount": "double",
+            "Currency": "string"
+        }
+
+        # Create Iceberg table
+        iceberg_table = IcebergTable("s3://raw-data-coffee-905418260021/tables/account_receivable", schema)
+
+        # Write data to Iceberg table
+        iceberg_table.write(df, mode="overwrite")
+
+        print("Data written to Iceberg table successfully.")

@@ -1,14 +1,21 @@
-import * as cdk from "aws-cdk-lib";
+import { RemovalPolicy, Stack } from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import { AwsCustomResource, PhysicalResourceId } from "aws-cdk-lib/custom-resources";
 import { Construct } from "constructs";
 
-export class IcebergTable extends cdk.Stack {
+export class IcebergTablesStack extends Stack {
     constructor(scope: Construct, id: string, props: IcebergTableProps) {
-        super(scope, id);
+        super(scope, id, { ...props, crossRegionReferences: true });
 
         const { databaseName, tableName, columns, partitionedBy, S3Bucket, workgroup } = props;
+
+        new s3.Bucket(this, "table_data", {
+            bucketName: `${S3Bucket}`,
+            autoDeleteObjects: true,
+            removalPolicy: RemovalPolicy.DESTROY,
+        });
 
         new AwsCustomResource(this, `IcebergTableCustomResource-${tableName}`, {
             installLatestAwsSdk: false,
@@ -27,7 +34,7 @@ export class IcebergTable extends cdk.Stack {
                     QueryExecutionContext: {
                         Database: databaseName,
                     },
-                    QueryString: `CREATE TABLE ${tableName} (${columns})${IcebergTable.getPartitionedBy(
+                    QueryString: `CREATE TABLE ${tableName} (${columns})${IcebergTablesStack.getPartitionedBy(
                         partitionedBy,
                     )} LOCATION 's3://${S3Bucket}/tables/${tableName}' TBLPROPERTIES ('table_type'='iceberg');`,
                     ResultConfiguration: {
