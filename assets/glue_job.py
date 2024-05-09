@@ -1,10 +1,11 @@
+import sys
 import io
 import json
 import boto3
 import pandas as pd
 from datetime import datetime, timedelta
 from awsglue.utils import getResolvedOptions
-from pyiceberg import IcebergTable
+from pyspark.sql import SparkSession
 
 # Initialize Glue client
 glue_client = boto3.client("glue")
@@ -40,6 +41,9 @@ response = cloudtrail_client.lookup_events(
 
 events = response.get("Events", [])
 
+bucket_name ="";
+object_key = "";
+
 for event in events:
     cloudtrail_event = event['CloudTrailEvent']
     event_payload = json.loads(cloudtrail_event)['requestParameters']['eventPayload']
@@ -52,27 +56,50 @@ for event in events:
         bucket_name = event_payload['eventBody']['detail']['bucket']['name']
         object_key = event_payload['eventBody']['detail']['object']['key']
 
-        # Download CSV file from S3
-        obj = s3_client.get_object(Bucket=bucket_name, Key=object_key)
+# Check if both bucket name and object key are non-empty
+if bucket_name and object_key:
+    # Initialize SparkSession
+    spark = SparkSession.builder \
+        .appName("Read CSV from S3") \
+        .getOrCreate()
 
-        # Read CSV file with pandas
-        df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+    # Specify the path to the CSV file in S3 using the extracted bucket name and object key
+    s3_path = f"s3://{bucket_name}/{object_key}"
 
-        # Create Iceberg table schema
-        schema = {
-            "TransactionID": "string",
-            "CustomerID": "int",
-            "Name": "string",
-            "InvoiceNumber": "string",
-            "InvoiceDate": "date",
-            "InvoiceAmount": "double",
-            "Currency": "string"
-        }
+    # Read the CSV file into a DataFrame
+    df = spark.read.csv(s3_path, header=True, inferSchema=True)
 
-        # Create Iceberg table
-        iceberg_table = IcebergTable("s3://raw-data-coffee-905418260021/tables/account_receivable", schema)
+    # Define the schema
+    schema = {
+        "transactionid": "string",
+        "customerid": "int",
+        "name": "string",
+        "invoicenumber": "string",
+        "invoicedate": "string",
+        "invoiceamount": "double",
+        "currency": "string",
+        "taxregistrationid": "string",
+        "legalentity": "string",
+        "region": "string",
+        "country": "string",
+        "businessline": "string",
+        "lockperiod": "string"
+    }
 
-        # Write data to Iceberg table
-        iceberg_table.write(df, mode="overwrite")
+    # Rename the columns and cast the data types
+    df = df.toDF(*schema)
 
-        print("Data written to Iceberg table successfully.")
+    # Show the DataFrame
+    df.show()
+
+    # Write DataFrame to Iceberg table
+    catalog_name = "glue_catalog"
+    database_name = "tax_database"
+    table_name = "account_receivable"
+    df.writeTo(f"{catalog_name}.{database_name}.{table_name}").append()
+
+    # Show the Iceberg table and its history
+    spark.table(f"{catalog_name}.{database_name}.{table_name}").show()
+    spark.table(f"{catalog_name}.{database_name}.{table_name}.history").show()
+else:
+    print("Error: Unable to extract bucket name or object key from CloudTrail events.")
