@@ -2,7 +2,7 @@
   "name": "data-pipelines",
   "version": "0.1.0",
   "bin": {
-    "data-pipelines": "bin/data-pipelines.js"
+    "data-pipelines": "dist/bin/data-pipelines.js"
   },
   "scripts": {
     "build": "tsc",

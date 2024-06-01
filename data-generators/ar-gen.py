@@ -14,7 +14,21 @@ def generate_data(num_records):
         invoice_date = (datetime.now() - timedelta(days=random.randint(1, 365))).strftime('%Y-%m-%d')
         invoice_amount = round(random.uniform(100, 5000), 2)
         currency = random.choice(["USD", "EUR", "GBP"])
-        data.append({"TransactionID": transaction_id, "CustomerID": customer_id, "Name": name, "InvoiceNumber": invoice_number, "InvoiceDate": invoice_date, "InvoiceAmount": invoice_amount, "Currency": currency})
+        tax_registration_id = "NL000099998B57"  # Set tax registration ID
+        dataset_type = "AR"  # Set dataset type as "AR"
+        reporting_period = "05-2024"  # Set reporting period as "05-2024"
+        data.append({
+            "tax_registration_id": tax_registration_id,
+            "dataset_type": dataset_type,
+            "reporting_period": reporting_period,
+            "transaction_id": transaction_id,
+            "customer_id": customer_id,
+            "name": name,
+            "invoice_number": invoice_number,
+            "invoice_date": invoice_date,
+            "invoice_amount": invoice_amount,
+            "currency": currency
+        })
     return data
 
 # Create directory if it doesn't exist
@@ -25,15 +39,15 @@ if not os.path.exists(directory):
 # CSV file path
 csv_file_path = os.path.join(directory, "ar.csv")
 
-# CSV column headers
-headers = ["TransactionID", "CustomerID", "Name", "InvoiceNumber", "InvoiceDate", "InvoiceAmount", "Currency"]
+# CSV column headers in snake case
+snake_case_headers = ["tax_registration_id", "dataset_type", "reporting_period", "transaction_id", "customer_id", "name", "invoice_number", "invoice_date", "invoice_amount", "currency"]
 
 # Generate data
 data = generate_data(1000000)  # Generate 1 million records
 
 # Write data to CSV file
 with open(csv_file_path, mode="w", newline="", encoding="utf-8") as file:
-    writer = csv.DictWriter(file, fieldnames=headers)
+    writer = csv.DictWriter(file, fieldnames=snake_case_headers)
     
     # Write header
     writer.writeheader()

@@ -1,9 +1,7 @@
 import sys
-import io
 import json
 import boto3
 import pandas as pd
-from datetime import datetime, timedelta
 from awsglue.utils import getResolvedOptions
 from pyspark.sql import SparkSession
 
@@ -11,95 +9,93 @@ from pyspark.sql import SparkSession
 glue_client = boto3.client("glue")
 
 # Get resolved options
-args = getResolvedOptions(sys.argv, ['WORKFLOW_NAME', 'WORKFLOW_RUN_ID'])
-workflow_name = args['WORKFLOW_NAME']
-workflow_run_id = args['WORKFLOW_RUN_ID']
+queue_url = 'https://sqs.eu-west-1.amazonaws.com/905418260021/GluePipelineStack-gluequeue6D2CCD0B-499n4FzYiEBh'
 
-# Get workflow run properties
-workflow_params = glue_client.get_workflow_run_properties(Name=workflow_name, RunId=workflow_run_id)["RunProperties"]
-batched_events = workflow_params.get('aws:eventIds', '')  # Check if key exists
-print("Batched Events:", batched_events)
+# Initialize SQS client
+sqs_client = boto3.client('sqs')
 
-# Initialize CloudTrail client with Ireland (eu-west-1) region
-cloudtrail_client = boto3.client('cloudtrail', region_name='eu-west-1')
-
-# Initialize S3 client
-s3_client = boto3.client('s3')
-
-# Lookup CloudTrail events
-response = cloudtrail_client.lookup_events(
-    LookupAttributes=[
-        {
-            'AttributeKey': 'EventName',
-            'AttributeValue': 'NotifyEvent'
-        },
-    ],
-    StartTime=(datetime.now() - timedelta(minutes=10)),
-    EndTime=datetime.now(),
-    MaxResults=100
+# Receive messages from SQS queue
+response = sqs_client.receive_message(
+    QueueUrl=queue_url,
+    MaxNumberOfMessages=10,  # Adjust as needed
+    WaitTimeSeconds=20  # Long polling
 )
 
-events = response.get("Events", [])
+messages = response.get("Messages", [])
+print(f"Received {len(messages)} messages from SQS.")
 
-bucket_name ="";
-object_key = "";
+if not messages:
+    print("No messages received from SQS.")
+    sys.exit(0)
 
-for event in events:
-    cloudtrail_event = event['CloudTrailEvent']
-    event_payload = json.loads(cloudtrail_event)['requestParameters']['eventPayload']
+print(f"Received {len(messages)} messages from SQS.")
 
-    # Check if the event ID matches the current batched event ID
-    if "[{}]".format(event_payload['eventId']) == batched_events:
-        print("Details:", event_payload['eventBody']['detail'])
+# Initialize DynamoDB client
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('data-review-service-DatasetTable-118ZWIA21PX1U')
 
-        # Extract bucket name and object key
-        bucket_name = event_payload['eventBody']['detail']['bucket']['name']
-        object_key = event_payload['eventBody']['detail']['object']['key']
+# Process each SQS message
+for message in messages:
+    print(f"Processing message: {message}")
+    body = json.loads(message['Body'])
+    event_records = body.get('Records', [])
+    
+    for record in event_records:
+        s3_info = record.get('s3', {})
+        bucket_name = s3_info.get('bucket', {}).get('name', '')
+        object_key = s3_info.get('object', {}).get('key', '')
 
-# Check if both bucket name and object key are non-empty
-if bucket_name and object_key:
-    # Initialize SparkSession
-    spark = SparkSession.builder \
-        .appName("Read CSV from S3") \
-        .getOrCreate()
+        if bucket_name and object_key:
+            try:
+                print(f"Processing S3 object: Bucket - {bucket_name}, Key - {object_key}")
 
-    # Specify the path to the CSV file in S3 using the extracted bucket name and object key
-    s3_path = f"s3://{bucket_name}/{object_key}"
+                # Initialize SparkSession
+                spark = SparkSession.builder \
+                    .appName("Read CSV from S3") \
+                    .getOrCreate()
 
-    # Read the CSV file into a DataFrame
-    df = spark.read.csv(s3_path, header=True, inferSchema=True)
+                # Specify the path to the CSV file in S3 using the extracted bucket name and object key
+                s3_path = f"s3://{bucket_name}/{object_key}"
+                print(f"Reading CSV from S3 path: {s3_path}")
 
-    # Define the schema
-    schema = {
-        "transactionid": "string",
-        "customerid": "int",
-        "name": "string",
-        "invoicenumber": "string",
-        "invoicedate": "string",
-        "invoiceamount": "double",
-        "currency": "string",
-        "taxregistrationid": "string",
-        "legalentity": "string",
-        "region": "string",
-        "country": "string",
-        "businessline": "string",
-        "lockperiod": "string"
-    }
+                # Read the CSV file into a DataFrame
+                df = spark.read.csv(s3_path, header=True, inferSchema=True)
 
-    # Rename the columns and cast the data types
-    df = df.toDF(*schema)
 
-    # Show the DataFrame
-    df.show()
+                # Convert all columns to string
+                for col in df.columns:
+                    df = df.withColumn(col, df[col].cast("string"))
 
-    # Write DataFrame to Iceberg table
-    catalog_name = "glue_catalog"
-    database_name = "tax_database"
-    table_name = "account_receivable"
-    df.writeTo(f"{catalog_name}.{database_name}.{table_name}").append()
+                # Convert Spark DataFrame to Pandas DataFrame for ease of writing to DynamoDB
+                pandas_df = df.toPandas()
 
-    # Show the Iceberg table and its history
-    spark.table(f"{catalog_name}.{database_name}.{table_name}").show()
-    spark.table(f"{catalog_name}.{database_name}.{table_name}.history").show()
-else:
-    print("Error: Unable to extract bucket name or object key from CloudTrail events.")
+                # Function to create composite key
+                def create_composite_key(row):
+                    dataset_type = "AR"  # Hardcoded value
+                    reporting_period = row['reporting_period'][:7]  # Assuming 'invoicedate' is in 'YYYY-MM-DD' format
+                    transaction_id = row['transaction_id']
+                    return f"{dataset_type}#{reporting_period}#{transaction_id}"
+
+                # Write each row to DynamoDB
+                with table.batch_writer() as batch:
+                    for index, row in pandas_df.iterrows():
+                        item = {
+                            'registration_id': row['tax_registration_id'],
+                            'dataset_type#reporting_period#transaction_id': create_composite_key(row)
+                        }
+                        for k, v in row.items():
+                            if pd.notnull(v):
+                                item[k] = v
+                        batch.put_item(Item=item)
+
+                # Delete the message from the queue after processing
+                sqs_client.delete_message(
+                    QueueUrl=queue_url,
+                    ReceiptHandle=message['ReceiptHandle']
+                )
+                print(f"Deleted message with ReceiptHandle: {message['ReceiptHandle']}")
+
+            except Exception as e:
+                print(f"Error processing file {object_key} from bucket {bucket_name}: {str(e)}")
+        else:
+            print("Error: Unable to extract bucket name or object key from SQS messages.")

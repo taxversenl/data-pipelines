@@ -1,6 +1,7 @@
 import * as cdk from "aws-cdk-lib";
 import { RemovalPolicy } from "aws-cdk-lib";
 import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as glue from "aws-cdk-lib/aws-glue";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lakeformation from "aws-cdk-lib/aws-lakeformation";
@@ -11,14 +12,14 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 
 export class GluePipelineStack extends cdk.Stack {
-    constructor(scope: Construct, constructId: string, props?: cdk.StackProps) {
-        super(scope, constructId, props);
+    constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+        super(scope, id, props);
 
         // Create raw, processed, and glue scripts S3 buckets
         const rawBucket = new s3.Bucket(this, "raw_data", {
             bucketName: `raw-data-coffee-${cdk.Aws.ACCOUNT_ID}`,
             autoDeleteObjects: true,
-            removalPolicy: RemovalPolicy.DESTROY, // Set removal policy
+            removalPolicy: RemovalPolicy.DESTROY,
             lifecycleRules: [
                 {
                     transitions: [
@@ -30,24 +31,32 @@ export class GluePipelineStack extends cdk.Stack {
                 },
             ],
             eventBridgeEnabled: true,
+            enforceSSL: true,
+            encryption: s3.BucketEncryption.S3_MANAGED,
         });
 
         const processedBucket = new s3.Bucket(this, "processed_data", {
             bucketName: `processed-data-coffee-${cdk.Aws.ACCOUNT_ID}`,
             autoDeleteObjects: true,
-            removalPolicy: RemovalPolicy.DESTROY, // Set removal policy
+            removalPolicy: RemovalPolicy.DESTROY,
+            enforceSSL: true,
+            encryption: s3.BucketEncryption.S3_MANAGED,
         });
 
         const scriptsBucket = new s3.Bucket(this, "glue_scripts", {
             bucketName: `glue-scripts-${cdk.Aws.ACCOUNT_ID}`,
             autoDeleteObjects: true,
-            removalPolicy: RemovalPolicy.DESTROY, // Set removal policy
+            removalPolicy: RemovalPolicy.DESTROY,
+            enforceSSL: true,
+            encryption: s3.BucketEncryption.S3_MANAGED,
         });
 
-        // Upload glue script to the specified bucket
-        new s3deploy.BucketDeployment(this, "deployment", {
-            sources: [s3deploy.Source.asset("./assets/")],
-            destinationBucket: scriptsBucket,
+        const glueDatabaseBucket = new s3.Bucket(this, "glue_database", {
+            bucketName: `glue-database-${cdk.Aws.ACCOUNT_ID}`,
+            autoDeleteObjects: true,
+            removalPolicy: RemovalPolicy.DESTROY,
+            enforceSSL: true,
+            encryption: s3.BucketEncryption.S3_MANAGED,
         });
 
         // Create SQS
@@ -60,7 +69,13 @@ export class GluePipelineStack extends cdk.Stack {
             new s3n.SqsDestination(glueQueue),
         );
 
-        // Create role for Glue Crawler and Glue Job and attach it to them
+        // Upload glue script to the specified bucket
+        new s3deploy.BucketDeployment(this, "deployment", {
+            sources: [s3deploy.Source.asset("./assets/")],
+            destinationBucket: scriptsBucket,
+        });
+
+        // Create role for Glue Job and attach it
         const glueRole = new iam.Role(this, "glue_role", {
             roleName: "GlueRole",
             description: "Role for Glue services to access S3",
@@ -90,11 +105,12 @@ export class GluePipelineStack extends cdk.Stack {
         glueRole.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
         // Create Glue Database and grant LakeFormation permissions
-        const glueDatabase = new glue.CfnDatabase(this, "tax-database", {
+        const glueDatabase = new glue.CfnDatabase(this, "tax_database", {
             catalogId: cdk.Aws.ACCOUNT_ID,
             databaseInput: {
-                name: "tax-database",
+                name: "tax_database",
                 description: "Database to store tax data.",
+                locationUri: glueDatabaseBucket.bucketArn,
             },
         });
         glueDatabase.applyRemovalPolicy(RemovalPolicy.DESTROY);
@@ -109,7 +125,7 @@ export class GluePipelineStack extends cdk.Stack {
                 resource: {
                     databaseResource: {
                         catalogId: glueDatabase.catalogId,
-                        name: "tax-database",
+                        name: "tax_database",
                     },
                 },
                 permissions: ["ALL"],
@@ -117,106 +133,45 @@ export class GluePipelineStack extends cdk.Stack {
         );
         lakeformationPermission.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
-        // Define outputs
-        new cdk.CfnOutput(this, "DatabaseName", {
-            value: glueDatabase.ref,
-            exportName: "DatabaseName",
-        });
-
-        new cdk.CfnOutput(this, "RawBucketName", {
-            value: rawBucket.bucketName,
-            exportName: "RawBucketName",
-        });
-
-        new cdk.CfnOutput(this, "ProcessedBucketNameOutput", {
-            value: processedBucket.bucketName,
-        });
-
-        new cdk.CfnOutput(this, "ScriptsBucketNameOutput", {
-            value: scriptsBucket.bucketName,
-        });
-
-        // Create Glue Crawler
-        const glueCrawler = new glue.CfnCrawler(this, "glue_crawler", {
-            name: "glue_crawler",
-            role: glueRole.roleArn,
-            databaseName: "tax-database",
-            targets: {
-                s3Targets: [
-                    {
-                        path: `s3://${rawBucket.bucketName}/`,
-                        eventQueueArn: glueQueue.queueArn,
-                    },
-                ],
-            },
-            recrawlPolicy: {
-                recrawlBehavior: "CRAWL_EVENT_MODE",
-            },
-        });
-
-        glueCrawler.applyRemovalPolicy(RemovalPolicy.DESTROY);
+        lakeformationPermission.addDependency(glueDatabase);
 
         // Create Glue job
-        const glue_job = new glue.CfnJob(this, "glue_job", {
+        const glueJob = new glue.CfnJob(this, "glue_job", {
             name: "glue_job",
             command: {
-                name: "pythonshell",
-                pythonVersion: "3.9",
+                name: "glueetl",
+                pythonVersion: "3",
                 scriptLocation: `s3://${scriptsBucket.bucketName}/glue_job.py`,
             },
             role: glueRole.roleArn,
             glueVersion: "3.0",
-            timeout: 3,
+            timeout: 30,
         });
-        glue_job.applyRemovalPolicy(RemovalPolicy.DESTROY);
+        glueJob.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
         // Create Glue Workflow
-        const glue_workflow = new glue.CfnWorkflow(this, "glue_workflow", {
+        const glueWorkflow = new glue.CfnWorkflow(this, "glue_workflow", {
             name: "glue_workflow",
             description: "Workflow to process the coffee data.",
         });
-        glue_workflow.applyRemovalPolicy(RemovalPolicy.DESTROY);
+        glueWorkflow.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
         // Create Glue Job trigger
-        const glue_job_trigger = new glue.CfnTrigger(this, "glue_job_trigger", {
+        const glueJobTrigger = new glue.CfnTrigger(this, "glue_job_trigger", {
             name: "glue_job_trigger",
             actions: [
                 {
-                    jobName: "glue_job",
+                    jobName: glueJob.name,
                     notificationProperty: { notifyDelayAfter: 3 },
                     timeout: 3,
                 },
             ],
-            type: "CONDITIONAL",
-            startOnCreation: true,
-            workflowName: glue_workflow.name,
-            predicate: {
-                conditions: [
-                    {
-                        crawlerName: "glue_crawler",
-                        logicalOperator: "EQUALS",
-                        crawlState: "SUCCEEDED",
-                    },
-                ],
-            },
+            type: "ON_DEMAND",
+            workflowName: glueWorkflow.name,
         });
-        glue_job_trigger.applyRemovalPolicy(RemovalPolicy.DESTROY);
-        // Create Glue Crawler trigger
-        const glue_crawler_trigger = new glue.CfnTrigger(this, "glue_crawler_trigger", {
-            name: "glue_crawler_trigger",
-            actions: [
-                {
-                    crawlerName: "glue_crawler",
-                    notificationProperty: { notifyDelayAfter: 3 },
-                    timeout: 3,
-                },
-            ],
-            type: "EVENT",
-            workflowName: glue_workflow.name,
-        });
-        glue_crawler_trigger.applyRemovalPolicy(RemovalPolicy.DESTROY);
+        glueJobTrigger.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
-        // Create EventBridge rule to trigger crawler based on upload events and role for it
+        // Create EventBridge rule to trigger the Glue workflow when an object is created in the raw data bucket
         const ruleRole = new iam.Role(this, "rule_role", {
             roleName: "EventBridgeRole",
             description: "Role for EventBridge to trigger Glue workflows.",
@@ -235,25 +190,63 @@ export class GluePipelineStack extends cdk.Stack {
         });
         ruleRole.applyRemovalPolicy(RemovalPolicy.DESTROY);
 
-        // Create an EventBridge rule to trigger the Glue crawler when an object is created
-        const rule_s3_glue = new events.CfnRule(this, "rule_s3_glue", {
-            name: "rule_s3_glue",
-            roleArn: ruleRole.roleArn,
-            targets: [
-                {
-                    arn: `arn:aws:glue:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:workflow/glue_workflow`,
-                    roleArn: ruleRole.roleArn,
-                    id: cdk.Aws.ACCOUNT_ID,
-                },
-            ],
+        const ruleS3Glue = new events.Rule(this, "rule_s3_glue", {
             eventPattern: {
-                "detail-type": ["Object Created"],
-                detail: {
-                    bucket: { name: [rawBucket.bucketName] },
-                },
                 source: ["aws.s3"],
+                detailType: ["Object Created"],
+                detail: {
+                    bucket: {
+                        name: [rawBucket.bucketName],
+                    },
+                },
             },
+            targets: [
+                new targets.AwsApi({
+                    service: "Glue",
+                    action: "startWorkflowRun",
+                    parameters: {
+                        Name: glueWorkflow.name,
+                    },
+                    policyStatement: new iam.PolicyStatement({
+                        actions: ["glue:StartWorkflowRun"],
+                        resources: [
+                            `arn:aws:glue:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:workflow/${glueWorkflow.name}`,
+                        ],
+                    }),
+                }),
+            ],
         });
-        rule_s3_glue.addDeletionOverride(RemovalPolicy.DESTROY);
+        ruleS3Glue.node.addDependency(ruleRole);
+
+        // Define outputs
+        new cdk.CfnOutput(this, "DatabaseNameOutput", {
+            value: glueDatabase.ref,
+            exportName: "DatabaseName",
+        });
+
+        new cdk.CfnOutput(this, "DatabaseBucketNameOutput", {
+            value: glueDatabaseBucket.bucketName,
+            exportName: "DatabaseBucketName",
+        });
+
+        new cdk.CfnOutput(this, "RawBucketNameOutput", {
+            value: rawBucket.bucketName,
+            exportName: "RawBucketName",
+        });
+
+        new cdk.CfnOutput(this, "ProcessedBucketNameOutput", {
+            value: processedBucket.bucketName,
+            exportName: "ProcessedBucketName",
+        });
+
+        new cdk.CfnOutput(this, "ScriptsBucketNameOutput", {
+            value: scriptsBucket.bucketName,
+            exportName: "ScriptsBucketName",
+        });
+
+        new cdk.CfnOutput(this, "GlueRoleArnOutput", {
+            value: glueRole.roleArn,
+            exportName: "GlueRoleArn",
+        });
     }
 }

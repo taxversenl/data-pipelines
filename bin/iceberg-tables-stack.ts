@@ -1,3 +1,4 @@
+import * as cdk from "aws-cdk-lib";
 import { RemovalPolicy, Stack } from "aws-cdk-lib";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
@@ -6,15 +7,38 @@ import { AwsCustomResource, PhysicalResourceId } from "aws-cdk-lib/custom-resour
 import { Construct } from "constructs";
 
 export class IcebergTablesStack extends Stack {
-    constructor(scope: Construct, id: string, props: IcebergTableProps) {
+    constructor(scope: Construct, id: string, props?: cdk.StackProps) {
         super(scope, id, { ...props, crossRegionReferences: true });
 
-        const { databaseName, tableName, columns, partitionedBy, S3Bucket, workgroup } = props;
+        // Define parameters for the Iceberg table
+        const catalogBucketName = cdk.Fn.importValue("DatabaseBucketName");
 
-        new s3.Bucket(this, "table_data", {
-            bucketName: `${S3Bucket}`,
+        // Define parameters for the Iceberg table
+        const databaseName = cdk.Fn.importValue("DatabaseName");
+        const tableName = "account_receivable";
+        const columns = `\
+          TransactionID string,\
+          CustomerID int,\
+          Name string,\
+          InvoiceNumber string,\
+          InvoiceDate string,\
+          InvoiceAmount double,\
+          Currency string,\
+          TaxRegistrationID string,\
+          LegalEntity string,\
+          Region string,\
+          Country string,\
+          BusinessLine string,\
+          LockPeriod string`;
+        const partitionedBy = "lockperiod"; // Partitioned by LockPeriod
+        const workgroup = "primary";
+
+        const athenaOuputBucket = new s3.Bucket(this, "athena-output", {
+            bucketName: `athena-logs-${cdk.Aws.ACCOUNT_ID}`,
             autoDeleteObjects: true,
             removalPolicy: RemovalPolicy.DESTROY,
+            enforceSSL: true,
+            encryption: s3.BucketEncryption.S3_MANAGED,
         });
 
         new AwsCustomResource(this, `IcebergTableCustomResource-${tableName}`, {
@@ -36,9 +60,9 @@ export class IcebergTablesStack extends Stack {
                     },
                     QueryString: `CREATE TABLE ${tableName} (${columns})${IcebergTablesStack.getPartitionedBy(
                         partitionedBy,
-                    )} LOCATION 's3://${S3Bucket}/tables/${tableName}' TBLPROPERTIES ('table_type'='iceberg');`,
+                    )} LOCATION 's3://${catalogBucketName}/tables/${tableName}' TBLPROPERTIES ('table_type'='iceberg');`,
                     ResultConfiguration: {
-                        OutputLocation: `s3://${S3Bucket}/athena_temp/`,
+                        OutputLocation: `s3://${athenaOuputBucket.bucketName}/athena_temp/`,
                     },
                     WorkGroup: workgroup,
                 },
@@ -53,7 +77,7 @@ export class IcebergTablesStack extends Stack {
                     },
                     QueryString: `DROP TABLE ${tableName}`,
                     ResultConfiguration: {
-                        OutputLocation: `s3://${S3Bucket}/athena_temp/`,
+                        OutputLocation: `s3://${athenaOuputBucket}/athena_temp/`,
                     },
                     WorkGroup: workgroup,
                 },
@@ -66,13 +90,4 @@ export class IcebergTablesStack extends Stack {
     private static getPartitionedBy(partitionedBy: string): string {
         return partitionedBy.length > 0 ? ` PARTITIONED BY (${partitionedBy}) ` : "";
     }
-}
-
-interface IcebergTableProps {
-    databaseName: string;
-    tableName: string;
-    columns: string;
-    partitionedBy: string;
-    S3Bucket: string;
-    workgroup: string;
 }
